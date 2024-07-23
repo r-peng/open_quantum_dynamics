@@ -201,11 +201,17 @@ class Kernels:
             #if q==1:
             #    return self.get_O21(N)
         if p==3:
+            return self.get_O3x(q,N)
+            #if q==1:
+            #    return self.get_O31(N)
+            #if q==2:
+            #    return self.get_O32(N)
+        if p==4:
+            return self.get_O4x(q,N)
             if q==1:
-                return self.get_O31(N)
-            #return self.get_O3x(q,N)
-        #    if q==2:
-        #        return self.get_O32(N)
+                return self.get_O41(N)
+            if q==2:
+                return self.get_O42(N)
 
         #FN,ct = self.get_sum_permute(N,'C',['Z','Y'],[p-2,q-1])
         #FN_,ct_ = self.get_sum_permute(N,'X',['Z','Y'],[p,q-1])
@@ -357,16 +363,11 @@ class Kernels:
         ct += ct_
         return FN,ct
     def get_O31(self,N):
-        print('called')
-        exit()
         FN,ct = self.get_sum_product(N,1,'C','Z')
-        print('CZ',FN)
         FN_,ct_ = self.get_sum_product(N,3,'X','Z')
-        print('XZZZ',FN_)
         FN += FN_
         ct += ct_
         FN_,ct_ = self.get_sum_permute1(N,2,'X','D','Z')
-        print('XDZ',FN_)
         FN += FN_
         ct += ct_
         return FN,ct
@@ -381,20 +382,14 @@ class Kernels:
         return FN,ct
     def get_O3x(self,q,N):
         FN,ct = self.get_sum_permute1(N,q,'C','Z','Y')
-        if q==1:
-            print('CZ',FN)
         FN_,ct_ = self.get_sum_permute(N,'X',['Z','Y'],[3,q-1])
-        if q==1:
-            print('XZZZ',FN_)
         FN += FN_
         ct += ct_
         FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[1,1,q-1])
-        if q==1:
-            print('XDZ',FN_)
         FN += FN_
         ct += ct_
         return FN,ct
-    def get_O31(self,N):
+    def get_O41(self,N):
         FN,ct = self.get_sum_product(N,2,'C','Z')
         FN_,ct_ = self.get_sum_product(N,4,'X','Z')
         FN += FN_
@@ -406,6 +401,36 @@ class Kernels:
         FN += FN_
         ct += ct_
         FN_,ct_ = self.get_sum_permute1(N,3,'X','D','Z')
+        FN += FN_
+        ct += ct_
+        return FN,ct
+    def get_O42(self,N):
+        FN,ct = self.get_sum_permute1(N,3,'C','Y','Z')
+        FN_,ct_ = self.get_sum_permute1(N,5,'X','Y','Z')
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute1(N,2,'C','D','Y')
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute1(N,3,'X','Y','D')
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[1,2,1])
+        FN += FN_
+        ct += ct_
+        return FN,ct
+    def get_O4x(self,q,N):
+        FN,ct = self.get_sum_permute(N,'C',['Y','Z'],[q-1,2])
+        FN_,ct_ = self.get_sum_permute(N,'X',['Y','Z'],[q-1,4])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute1(N,q,'C','D','Y')
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'X',['Y','D'],[q-1,2])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[1,2,q-1])
         FN += FN_
         ct += ct_
         return FN,ct
@@ -455,9 +480,9 @@ if check:
         print('\nN=',N)
         #for order in range(1,max_order+1):
         for (p,q),F1 in kn.ordered_F[N].orders.items():
-            if p>3:
+            if p>4:
                 continue
-            #if p==3:
+            #if p==4:
             #    if q>2:
             #        continue
             print('p,q=',p,q)
