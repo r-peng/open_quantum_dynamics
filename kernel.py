@@ -68,6 +68,7 @@ class Kernels:
         UN = self._L(self.U[N-1]) 
         for m in range(1,N+1):
             UN += self.delta**2 * np.dot(self.K[N-m],self.U[m-1])
+        # now we want to make 
         self.U.append(UN)
         EN = self.rng.normal(size=(self.sys_size,)*2)
         EN = EN + 1j*self.rng.normal(size=(self.sys_size,)*2)
@@ -79,6 +80,8 @@ class Kernels:
         for m in range(2,N+2):
             KN -= self.delta**2 * np.dot(self.K_appr[N+1-m],self.U_appr[m-1]) 
         self.K_appr.append(KN/self.delta**2)
+    def get_U(self,N):
+        return self.U[N]
     def get_X(self,N):
         try:
             return self.X[N]
@@ -116,6 +119,8 @@ class Kernels:
             return self.Z[N]
         except:
             pass
+        if N==0:
+            return 0
         ZN = self._Ls(self.U[N-1])
         self.Z[N] = ZN
         return ZN
@@ -140,10 +145,14 @@ class Kernels:
             return self.get_C(N)
         if typ=='D':
             return self.get_D(N)
+        if typ=='U':
+            return self.get_U(N)
     def get_next(self,full=True,order=False):
         self.get_trueKnext()
         self.get_trueUnext()
         self.get_approxKnext()
+        if not full and not order:
+            return
 
         N = len(self.F)
         if order:
@@ -186,41 +195,41 @@ class Kernels:
             tmp += self.delta**p * self.eps**q * Fpq
         assert np.linalg.norm(tmp-self.F[N])/np.linalg.norm(self.F[N])<1e-6
     def get_order(self,p,q,N):
-        if p==0:
-            return self.get_O0x(q,N)
-        if p==1:
-            return self.get_O1x(q,N)
-            #if q==1:
-            #    return self.get_O11(N)
-            #if q==2:
-            #    return self.get_O12(N)
-        if p==2:
-            return self.get_O2x(q,N)
-            #if q==2:
-            #    self.get_O22(N)
-            #if q==1:
-            #    return self.get_O21(N)
-        if p==3:
-            return self.get_O3x(q,N)
-            #if q==1:
-            #    return self.get_O31(N)
-            #if q==2:
-            #    return self.get_O32(N)
-        if p==4:
-            return self.get_O4x(q,N)
-            if q==1:
-                return self.get_O41(N)
-            if q==2:
-                return self.get_O42(N)
-
-        #FN,ct = self.get_sum_permute(N,'C',['Z','Y'],[p-2,q-1])
-        #FN_,ct_ = self.get_sum_permute(N,'X',['Z','Y'],[p,q-1])
-        #FN += FN_
-        #ct += ct_
-        #FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[1,p-2,q-1])
-        #FN += FN_
-        #ct += ct_
-        #return FN,ct
+        return self.get_Opq(p,q,N)
+        #if p==0:
+        #    return self.get_O0x(q,N)
+        #if p==1:
+        #    return self.get_O1x(q,N)
+        #    #if q==1:
+        #    #    return self.get_O11(N)
+        #    #if q==2:
+        #    #    return self.get_O12(N)
+        #if p==2:
+        #    return self.get_O2x(q,N)
+        #    #if q==2:
+        #    #    self.get_O22(N)
+        #    #if q==1:
+        #    #    return self.get_O21(N)
+        #if p==3:
+        #    return self.get_O3x(q,N)
+        #    #if q==1:
+        #    #    return self.get_O31(N)
+        #    #if q==2:
+        #    #    return self.get_O32(N)
+        #if p==4:
+        #    return self.get_O4x(q,N)
+        #    if q==1:
+        #        return self.get_O41(N)
+        #    if q==2:
+        #        return self.get_O42(N)
+        #if p==5:
+        #    return self.get_O5x(q,N)
+        #    if q==1:
+        #        return self.get_O51(N)
+        #    if q==2:
+        #        return self.get_O52(N)
+        #if p==6:
+        #    return self.get_O6x(q,N)
     def _get_product(self,typ,m):
         pd = np.eye(self.sys_size) 
         for mix in m:
@@ -434,7 +443,87 @@ class Kernels:
         FN += FN_
         ct += ct_
         return FN,ct
-
+    def get_O51(self,N):
+        FN,ct = self.get_sum_product(N,3,'C','Z')
+        FN_,ct_ = self.get_sum_product(N,5,'X','Z')
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute1(N,2,'C','D','Z')
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute1(N,3,'X','Z','D')
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute1(N,4,'X','D','Z')
+        FN += FN_
+        ct += ct_
+        return FN,ct
+    def get_O52(self,N):
+        FN,ct = self.get_sum_permute1(N,4,'C','Y','Z')
+        FN_,ct_ = self.get_sum_permute1(N,6,'X','Y','Z')
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'C',['D','Z','Y'],[1,1,1])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'X',['Z','D','Y'],[3,1,1])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[2,1,1])
+        FN += FN_
+        ct += ct_
+        return FN,ct
+    def get_O5x(self,q,N):
+        FN,ct = self.get_sum_permute(N,'C',['Y','Z'],[q-1,3])
+        FN_,ct_ = self.get_sum_permute(N,'X',['Y','Z'],[q-1,5])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'C',['D','Z','Y'],[1,1,q-1])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'X',['Z','D','Y'],[3,1,q-1])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[2,1,q-1])
+        FN += FN_
+        ct += ct_
+        return FN,ct
+    def get_O6x(self,q,N):
+        FN,ct = self.get_sum_permute(N,'C',['Y','Z'],[q-1,4])
+        FN_,ct_ = self.get_sum_permute(N,'C',['D','Z','Y'],[1,2,q-1])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'C',['D','Y'],[2,q-1])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'X',['Y','Z'],[q-1,6])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'X',['Z','D','Y'],[4,1,q-1])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[2,2,q-1])
+        FN += FN_
+        ct += ct_
+        FN_,ct_ = self.get_sum_permute(N,'X',['D','Y'],[3,q-1])
+        FN += FN_
+        ct += ct_
+        return FN,ct
+    def get_Opq(self,p,q,N):
+        k,r = p//2, p%2
+        FN = np.zeros((self.sys_size,)*2,dtype=complex)
+        ct = 0
+        for i in range(k+1):
+            nz = 2*(k-i) if r==0 else 2*(k-i)+1
+            FNi,cti = self.get_sum_permute(N,'X',['D','Z','Y'],[i,nz,q-1])
+            FN += FNi
+            ct += cti
+        for i in range(k):
+            nz = 2*(k-1-i) if r==0 else 2*(k-1-i)+1
+            FNi,cti = self.get_sum_permute(N,'C',['D','Z','Y'],[i,nz,q-1])
+            FN += FNi
+            ct += cti
+        return FN,ct
 def count1(N,p):
     if p==1:
         return 3,None
@@ -468,21 +557,22 @@ def approx(N,p):
     return 2 * (2*np.e*(N+1)/p)**p
           
 check = True
+check = False
 if check:
     max_order = None 
     Nmax = 10 
 
     kn = Kernels(sys_size=2,max_order=max_order,eps=0.13,delta=0.27)
     for N in range(Nmax+1):
-        print('\nN=',N)
+        print('N=',N)
         kn.get_next(order=True)
     for N in range(Nmax+1): 
         print('\nN=',N)
         #for order in range(1,max_order+1):
         for (p,q),F1 in kn.ordered_F[N].orders.items():
-            if p>4:
-                continue
-            #if p==4:
+            #if p>6:
+            #    continue
+            #if p==5:
             #    if q>2:
             #        continue
             print('p,q=',p,q)
@@ -501,17 +591,44 @@ if check:
             #err3 = count(N,order)
             #err4 = approx(N,order)
             #print('order=',order,err1,err2,err3,err4)
+    exit()
 
-string = 'AAB'
-ls = itertools.permutations(string,len(string))
-print(set(ls))
+plot_XYZ = True
+if plot_XYZ:
+    Nmax = 100
+    Ns = range(Nmax+1)
+    #typs = 'X','Y','Z'
+    typs = 'U',#'Y','Z'
+    max_order = None 
+    runs = range(200)
+    every = 1 
+    data = np.zeros((len(runs),len(typs),Nmax+1))
+    for run in runs:
+        if run%every==0:
+            print('run=',run)
+        kn = Kernels(sys_size=2,max_order=max_order,eps=0.13,delta=0.27)
+        for N in Ns:
+            kn.get_next(full=False)
+        for ix,typ in enumerate(typs): 
+            for N in Ns:
+                data[run,ix,N] = np.linalg.norm(kn.get_matrix(typ,N))
+    data = np.quantile(data,(0.25,0.5,0.75),axis=0)
+    print(data.shape)
+    for ix,typ in enumerate(typs):
+        y = data[:,ix,:]
+        fig,ax = plt.subplots(nrows=1,ncols=1)
+        ax.plot(Ns,y[1],linestyle='-')
+        ax.fill_between(Ns,y[0],y[2],alpha=0.2)
+        plt.subplots_adjust(left=0.1, bottom=0.15, right=0.99, top=0.95)
+        ax.set_xlabel('N')
+        ax.set_ylabel(typ+'norm')
+        fig.savefig(typ+'.png')
 exit()
+    
+    
 
-eps = [0.001]
-max_order = 8 
-Nmax = 50
 plot_eps = True
-sys_size = 128 
+sys_size = 2 
 #plot_eps = False 
 if plot_eps:
     fig,ax = plt.subplots(nrows=1,ncols=1)
