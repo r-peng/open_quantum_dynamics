@@ -6,12 +6,230 @@ import matplotlib.pyplot as plt
 plt.rcParams.update({'font.size':16})
 colors = 'r','g','b','y','c','orange','pink','grey','olive'
 
-class Kernel:
+def get_density_matrix(size,check=True):
+    rho = np.random.rand(size)
+    rho /= rho.sum() # eigenvalues
+    D = np.random.rand(size,size)
+    D -= D.T
+    D = scipy.linalg.expm(D)
+    rho = np.dot(D*rho,D.T)
+    check_property(rho)
+    return rho 
+def check_property(rho,thresh=1e-6):
+    print('check hermiticity...')
+    assert np.linalg.norm(rho-rho.T.conj())/np.linalg.norm(rho)<thresh
+    print('check positivity...')
+    w = np.linalg.eigvalsh(rho) 
+    try:
+        assert len(w[w>0])==len(w)
+    except:
+        print(w)
+    print('check trace...')
+    assert abs(w.sum()-1)<thresh
+def get_full_H(ls):
+    H = ls[0]
+    n = H.shape[0]
+    for Hi in ls[1:]:
+        H = np.einsum('...,pq->...pq',H,Hi)
+        n *= Hi.shape[0]
+    ax = [2*i for i in range(len(ls))] + [2*i+1 for i in range(len(ls))]
+    return H.transpose(*ax).reshape(n,n)
+class Hamiltonian:
+    def __init__(self,size=(2,3)):
+        self.ns,self.nb = size[0],np.prod(np.array(size[1:]))
+        self.size = size
+        self.U = None
+        self.D = None
+        self.Hb = [None] * (len(size) - 1)
+        for i,ni in enumerate(size):
+            if i==0:
+                ls = [np.eye(nj) for nj in size]
+                ls[0] = self.get_Hs()
+                self.H = get_full_H(ls) 
+                continue
+
+            ls = [np.eye(nj) for nj in size]
+            ls[i] = self.get_Hb(i) 
+            self.H += get_full_H(ls) 
+
+            ls = [np.eye(ni) for ni in size]
+            ls[0] = self.get_S(i) 
+            ls[i] = self.get_B(i) 
+            self.H += get_full_H(ls) 
+
+        self.Ls = np.einsum('pr,qs->pqrs',self.Hs,np.eye(self.ns))
+        self.Ls -=np.einsum('pr,qs->pqrs',np.eye(self.ns),self.Hs)
+        self.Ls = self.Ls.reshape(self.ns**2,self.ns**2)
+    def get_Hs(self):
+        self.Hs = np.random.rand(self.ns,self.ns) * 2 - 1
+        self.Hs += self.Hs.T
+        return self.Hs
+    def get_Hb(self,i):
+        Hb = np.random.rand(self.size[i],self.size[i]) * 2 - 1
+        Hb += Hb.T
+        self.Hb[i-1] = Hb
+        return Hb
+    def get_S(self,i):
+        if self.D is None:
+            self.D = np.random.rand(self.ns,self.ns)
+            self.D -= self.D.T
+            self.D = scipy.linalg.expm(self.D)
+        S = np.random.rand(self.ns)
+        return np.dot(self.D*S,self.D.T)
+    def get_B(self,i):
+        B = np.random.rand(self.size[i],self.size[i]) * 2 - 1
+        B += B.T
+        return B
+    def get_U(self,delta):
+        H = self.H
+        if len(self.H.shape)>2:
+            n = self.ns * self.nb
+            H = H.reshape(n,n)
+        self.U = scipy.linalg.expm(-H*1j*delta)
+    def get_rho_bath(self,beta):
+        ls = [scipy.linalg.expm(-beta*Hi) for Hi in self.Hb]
+        ls = [rho/np.trace(rho) for rho in ls]
+        return get_full_H(ls) 
+class SpinBoson(Hamiltonian):
+    def __init__(self,hx=1,hz=1,**kwargs):
+        self.hx,self.hz = hx,hz
+        super().__init__(**kwargs)
+    def get_Hs(self):
+        self.Hs = self.hx * np.array([[0,1.],[1,0]]) 
+        self.Hs += self.hz * np.array([[1.,0],[0,-1]])
+        self.Hs *= .5 
+        return self.Hs
+    def get_Hb(self,i):
+        self.Hb[i-1] = np.diag(np.random.rand(self.size[i]))
+        return self.Hb[i-1]
+    def get_S(self,i):
+        return .5 * np.array([[1,0],[0,-1]])
+    def get_B(self,i):
+        B = np.zeros((self.size[i],self.size[i]))
+        for i in range(self.size[i]-1):
+            B[i,i+1] = B[i+1,i] = np.random.rand() 
+        return B
+class Propagator:
+    def __init__(self,ham=None,size=(2,3),rho_bath0=None,delta=1,beta=1):
+        self.delta = delta
+        if ham is None:
+            ham = Hamiltonian(size=size)
+        self.ham = ham
+        self.ham.get_U(delta)
+        self.ns,self.nb = ham.ns,ham.nb
+        if rho_bath0 is None:
+            self.rho_bath0 = ham.get_rho_bath(beta) 
+
+        self.Ufull = {0:np.eye(self.ns*self.nb)}
+        self.U = {0:self.get_Us(self.Ufull[0])}
+        self.K = dict()
+    def get_Us(self,U):
+        if len(U.shape)==2:
+            U = U.reshape(self.ns,self.nb,self.ns,self.nb)
+        U = np.einsum('pqrs,PqRS,sS->pPrR',U,U.conj(),self.rho_bath0)
+        return U.reshape(self.ns**2,self.ns**2)
+    def _L(self,U):
+        return U - self.delta * 1j * np.dot(self.ham.Ls,U)
+    def propagate(self,N):
+        if N in self.K:
+            return
+        self.Ufull[N+1] = np.dot(self.ham.U,self.Ufull[N])
+        self.U[N+1] = self.get_Us(self.Ufull[N+1])
+
+        self.K[N] = self.U[N+1] - self._L(self.U[N])
+        for m in range(2,N+2):
+            self.K[N] -= self.delta**2*np.dot(self.K[N+1-m],self.U[m-1]) 
+        self.K[N] /= self.delta**2
+class MeasuredPropagator(Propagator):
+    def __init__(self,eps,**kwargs):
+        super().__init__(**kwargs)
+        self.eps = eps
+
+        self.E = {0:np.zeros((self.ns**2,)*2)}
+        self.U_appr = {0:self.U[0]}
+        self.K_appr = dict() 
+    def propagate(self,N):
+        super().propagate(N)
+        if N in self.K_appr:
+            return
+        self.E[N+1] = np.random.normal(size=(self.ns**2,)*2)
+        self.E[N+1] = self.E[N+1] + 1j*np.random.normal(size=(self.ns**2,)*2)
+        self.U_appr[N+1] = self.U[N+1]+self.eps*self.E[N+1]
+
+        self.K_appr[N] = self.U_appr[N+1] - self._L(self.U_appr[N])
+        for m in range(2,N+2):
+            self.K_appr[N] -= self.delta**2*np.dot(self.K_appr[N+1-m],self.U_appr[m-1]) 
+        self.K_appr[N] /= self.delta**2
+class PropagatedError(MeasuredPropagator):
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.F = dict() 
+
+        self.X = dict()
+        self.Y = dict()
+        self.Z = dict()
+        self.C = dict() 
+        self.D = dict()
+    def get_X(self,N):
+        XN = self.E[N+1] - self.E[N] - self._L(self.E[N])
+        if N>0:
+            XN += self._L(self.E[N-1])
+        return XN
+    def get_Y(self,N):
+        YN = -self.E[N].copy()
+        if N>0:
+            YN += self.E[N-1]
+        return YN
+    def get_Z(self,N):
+        if N==0:
+            return 0
+        return 1j * np.dot(self.ham.Ls,self.U[N-1])
+    def get_C(self,N):
+        CN = np.zeros((self.ns**2,)*2,dtype=complex)
+        if N>0:
+            CN -= np.dot(self.K[N-1],self.E[1])
+        for m in range(2,N+1):
+            CN -= np.dot(self.K[N-m],self.E[m]-self.E[m-1])
+        return CN 
+    def get_D(self,N):
+        DN = np.zeros((self.ns**2,)*2,dtype=complex)
+        for n in range(1,N+1):
+            DN -= np.dot(self.K[N-n],self.U[n-1])
+        return DN
+    def get_matrix(self,typ,N):
+        if typ=='U':
+            return self.U[N]
+        if typ=='K':
+            return self.K[N]
+        saved = {'X':self.X,'Y':self.Y,'Z':self.Z,'C':self.C,'D':self.D}[typ]
+        try:
+            return saved[N]
+        except:
+            pass
+        fxn = {'X':self.get_X,'Y':self.get_Y,'Z':self.get_Z,'C':self.get_C,'D':self.get_D}[typ]
+        saved[N] = fxn(N)
+        return saved[N] 
+    def propagate(self,N):
+        super().propagate(N)
+        if N in self.F:
+            return
+        XN = self.get_X(N)
+        CN = self.get_C(N)
+        self.F[N] = self.eps * (XN + self.delta**2 * CN)
+        for m in range(1,N+1):
+            Ym = self.get_Y(m)
+            Zm = self.get_Z(m)
+            Dm = self.get_D(m)
+
+            tmp = self.eps * Ym + self.delta * Zm + self.delta**2 * Dm
+            self.F[N] += self.delta**2 * np.dot(self.F[N-m],tmp)
+        self.F[N] /= self.delta**2
+        assert np.linalg.norm(self.K_appr[N]-self.K[N]-self.F[N])/np.linalg.norm(self.F[N])<1e-6
+class Error:
     def __init__(self,N,max_order=None):
         self.N = N
         self.max_order = max_order
         self.orders = dict() 
-
     def add(self,order,coeff):
         if self.max_order is not None:
             if sum(order) > self.max_order:
@@ -22,337 +240,48 @@ class Kernel:
             self.orders[order] += coeff
         else:
             self.orders[order] = coeff.copy()
-class Kernels:
-    def __init__(self,sys_size=2,max_order=None,eps=1,delta=1,decay=None):
+class OrderedPropagatedError(PropagatedError):
+    def __init__(self,max_order=None,**kwargs):
+        super().__init__(**kwargs)
         self.max_order = max_order
-        self.sys_size = sys_size
-        self.delta = delta
-        self.eps = eps
-        self.decay = decay
-        self.rng = np.random.default_rng()
-        
-        self.Hs = self.rng.random(size=(self.sys_size,)*2) * 2 - 1
-        self.Hs = (self.Hs + self.Hs.T) / 2
-
-        self.U = [np.eye(self.sys_size,dtype=complex)]
-        self.E = [np.zeros((self.sys_size,)*2)]
-        self.U_appr = [self.U[0]]
-        self.K = []
-        self.K_appr = []
-        self.F = []
-
-        self.ordered_F = []
-        self.X = dict()
-        self.Y = dict()
-        self.Z = dict()
-        self.C = dict() 
-        self.D = dict()
-        # suppose know the set of true K's (which will be randomly generated)
-        # then can get the set of true U's. 
-        # from the true U's can get the measured U's
-        # then can get approximate K and F
-    def _decay(self,N):
-        if self.decay is None:
-            return 1
-        raise NotImplementedError
-    def _Ls(self,U):
-        return 1j * (np.dot(self.Hs,U)-np.dot(U,self.Hs))
-    def _L(self,U):
-        return U - self.delta * self._Ls(U)
-    def get_trueKnext(self):
-        N = len(self.K)
-        KN = self.rng.random(size=(self.sys_size,)*2) * 2 - 1
-        self.K.append(self._decay(N)*KN)
-    def get_trueUnext(self):
-        N = len(self.U)
-        UN = self._L(self.U[N-1]) 
-        for m in range(1,N+1):
-            UN += self.delta**2 * np.dot(self.K[N-m],self.U[m-1])
-        # now we want to make 
-        self.U.append(UN)
-        EN = self.rng.normal(size=(self.sys_size,)*2)
-        EN = EN + 1j*self.rng.normal(size=(self.sys_size,)*2)
-        self.U_appr.append(UN+self.eps*EN)
-        self.E.append(EN)
-    def get_approxKnext(self):
-        N = len(self.K_appr)
-        KN = self.U_appr[N+1] - self._L(self.U_appr[N])
-        for m in range(2,N+2):
-            KN -= self.delta**2 * np.dot(self.K_appr[N+1-m],self.U_appr[m-1]) 
-        self.K_appr.append(KN/self.delta**2)
-    def get_U(self,N):
-        return self.U[N]
-    def get_X(self,N):
-        try:
-            return self.X[N]
-        except:
-            pass
-        XN = self.E[N+1] - self.E[N] - self._L(self.E[N])
-        if N>0:
-            XN += self._L(self.E[N-1])
-        self.X[N] = XN
-        return XN
-    def get_C(self,N):
-        try:
-            return self.C[N]
-        except:
-            pass
-        CN = np.zeros((self.sys_size,)*2,dtype=complex)
-        if N>0:
-            CN -= np.dot(self.K[N-1],self.E[1])
-        for m in range(2,N+1):
-            CN -= np.dot(self.K[N-m],self.E[m]-self.E[m-1])
-        self.C[N] = CN
-        return CN 
-    def get_Y(self,N):
-        try:
-            return self.Y[N]
-        except:
-            pass
-        YN = -self.E[N]
-        if N>0:
-            YN += self.E[N-1]
-        self.Y[N] = YN
-        return YN
-    def get_Z(self,N):
-        try:
-            return self.Z[N]
-        except:
-            pass
-        if N==0:
-            return 0
-        ZN = self._Ls(self.U[N-1])
-        self.Z[N] = ZN
-        return ZN
-    def get_D(self,N):
-        try:
-            return self.D[N]
-        except:
-            pass
-        DN = np.zeros((self.sys_size,2),dtype=complex)
-        for n in range(1,N+1):
-            DN -= np.dot(self.K[N-n],self.U[n-1])
-        self.D[N] = DN
-        return DN
-    def get_matrix(self,typ,N):
-        if typ=='X':
-            return self.get_X(N)
-        if typ=='Y':
-            return self.get_Y(N)
-        if typ=='Z':
-            return self.get_Z(N)
-        if typ=='C':
-            return self.get_C(N)
-        if typ=='D':
-            return self.get_D(N)
-        if typ=='U':
-            return self.get_U(N)
-    def get_next(self,full=True,order=False):
-        self.get_trueKnext()
-        self.get_trueUnext()
-        self.get_approxKnext()
-        if not full and not order:
+        self.ordered_F = dict() 
+    def propagate(self,N):
+        super().propagate(N)
+        if N in self.ordered_F:
             return
-
-        N = len(self.F)
-        if order:
-            FN_ = Kernel(N,max_order=self.max_order)
-
+        FN = Error(N,max_order=self.max_order)
         XN = self.get_X(N)
         CN = self.get_C(N)
-        if full:
-            FN = self.eps * (XN + self.delta**2 * CN)
-        if order:
-            FN_.add((0,1),XN)
-            FN_.add((2,1),CN)
+        FN.add((0,1),XN)
+        FN.add((2,1),CN)
         for m in range(1,N+1):
             Ym = self.get_Y(m)
             Zm = self.get_Z(m)
             Dm = self.get_D(m)
-            if full:
-                tmp = self.eps * Ym + self.delta * Zm + self.delta**2 * Dm
-                FN += np.dot(self.F[N-m],tmp)
-            if not order:
-                continue
             for (p,q),Fpq in self.ordered_F[N-m].orders.items():
-                FN_.add((p,q+1),np.dot(Fpq,Ym))
-                FN_.add((p+1,q),np.dot(Fpq,Zm)) 
-                FN_.add((p+2,q),np.dot(Fpq,Dm)) 
-        if full:
-            self.F.append(FN)
-            assert np.linalg.norm(self.K_appr[N]-self.K[N]-self.F[N]/self.delta**2)/np.linalg.norm(self.F[N])<1e-6
-        if not order:
-            return
-        self.ordered_F.append(FN_)
-        if self.max_order is not None:
-            return
-        try: 
-            FN = self.F[N]
-        except:
-            return 
-        tmp = np.zeros((self.sys_size,)*2,dtype=complex)
-        for (p,q),Fpq in FN_.orders.items():
-            tmp += self.delta**p * self.eps**q * Fpq
-        assert np.linalg.norm(tmp-self.F[N])/np.linalg.norm(self.F[N])<1e-6
-    def get_order(self,p,q,N):
-        return self.get_Opq(p,q,N)
-        #if p==0:
-        #    return self.get_O0x(q,N)
-        #if p==1:
-        #    return self.get_O1x(q,N)
-        #    #if q==1:
-        #    #    return self.get_O11(N)
-        #    #if q==2:
-        #    #    return self.get_O12(N)
-        #if p==2:
-        #    return self.get_O2x(q,N)
-        #    #if q==2:
-        #    #    self.get_O22(N)
-        #    #if q==1:
-        #    #    return self.get_O21(N)
-        #if p==3:
-        #    return self.get_O3x(q,N)
-        #    #if q==1:
-        #    #    return self.get_O31(N)
-        #    #if q==2:
-        #    #    return self.get_O32(N)
-        #if p==4:
-        #    return self.get_O4x(q,N)
-        #    if q==1:
-        #        return self.get_O41(N)
-        #    if q==2:
-        #        return self.get_O42(N)
-        #if p==5:
-        #    return self.get_O5x(q,N)
-        #    if q==1:
-        #        return self.get_O51(N)
-        #    if q==2:
-        #        return self.get_O52(N)
-        #if p==6:
-        #    return self.get_O6x(q,N)
-    def _get_product(self,typ,m):
-        pd = np.eye(self.sys_size) 
-        for mix in m:
-            pd = np.dot(pd,self.get_matrix(typ,mix))
-        return pd 
-    def get_sum_product(self,N,l,typ1,typ2):
-        ct = 0
-        if l<0:
-            return 0,ct
-        if l==0:
-            return self.get_matrix(typ1,N).copy(),ct
-        FN = np.zeros((self.sys_size,)*2,dtype=complex) 
-        mrange = range(1,N-(l-1)+1)
-        for m in itertools.product(mrange,repeat=l):
-            _sum = sum(m)
-            if _sum>N:
-                continue
-            ct += 1
-            FN += np.dot(self.get_matrix(typ1,N-_sum),self._get_product(typ2,m))
-        return FN,ct
-    def get_O0x(self,q,N):
-        return self.get_sum_product(N,q-1,'X','Y')
-    def _permute1(self,typ1,typ2,m):
-        A = self.get_matrix(typ1,m[0]) 
-        if len(m)==1:
-            return A.copy() 
-        Bs = [self.get_matrix(typ2,mix) for mix in m[1:]]
-        L = [np.eye(self.sys_size)] 
-        for B in Bs:
-            L.append(np.dot(L[-1],B))
-        R = [np.eye(self.sys_size)]
-        for B in Bs[::-1]:
-            R.append(np.dot(B,R[-1])) 
-        _sum = np.zeros((self.sys_size,)*2,dtype=complex)
-        l = len(m)
-        for nl in range(l):
-            nr = max(l - nl - 1,0)
-            _sum += np.dot(np.dot(L[nl],A),R[nr])
-        return _sum 
-    def get_sum_permute1(self,N,l,typ1,typ2,typ3):
-        FN = np.zeros((self.sys_size,)*2,dtype=complex)
-        mrange = range(1,N-(l-1)+1)
-        ct = 0
-        for m in itertools.product(mrange,repeat=l):
-            _sum = sum(m)
-            if _sum>N:
-                continue
-            ct += 1
-            FN += np.dot(self.get_matrix(typ1,N-_sum),self._permute1(typ2,typ3,m))
-        return FN,ct
-    def get_O1x(self,q,N):
-        return self.get_sum_permute1(N,q,'X','Z','Y')
-    def get_O11(self,N):
-        FN = np.zeros((self.sys_size,)*2,dtype=complex)
-        for m in range(1,N+1):
-            FN += np.dot(self.get_X(N-m),self.get_Z(m))
-        return FN,None 
-    def get_O12(self,N):
-        FN = np.zeros((self.sys_size,)*2,dtype=complex)
-        for m in range(1,N):
-            Ym = self.get_Y(m) 
-            for n in range(1,N):
-                if m+n>N:
-                    continue
-                Zn = self.get_Z(n) 
-                ac = np.dot(Ym,Zn)+np.dot(Zn,Ym)
-                FN += np.dot(self.get_X(N-m-n),ac)
-        return FN,None 
-    def get_O21(self,N):
-        FN = self.get_C(N).copy()
-        for m in range(1,N):
-            Zm = self.get_Z(m)
-            for n in range(1,N):
-                if m+n>N:
-                    continue
-                Zn = self.get_Z(n)
-                X = self.get_X(N-m-n)
-                FN += np.dot(X,np.dot(Zm,Zn))
-        for m in range(1,N+1):
-            FN += np.dot(self.get_X(N-m),self.get_D(m))
-        return FN,None 
-    def get_O22(self,N):
-        FN = np.zeros((self.sys_size,)*2,dtype=complex)
-        for m in range(1,N+1):
-            FN += np.dot(self.get_C(N-m),self.get_Y(m))
-        for m in range(1,N):
-            Dm = self.get_D(m)
-            for n in range(1,N):
-                if m+n>N:
-                    continue
-                Yn = self.get_Y(n)
-                X = self.get_X(N-m-n)
-                tmp = np.dot(Dm,Yn)+np.dot(Yn,Dm)
-                FN += np.dot(X,tmp)
-        mrange = range(1,N-1)
-        for m in itertools.product(mrange,repeat=3):
-            _sum = sum(m)
-            if _sum>N:
-                continue
-            X = self.get_X(N-_sum)
-            Z0 = self.get_Z(m[0])
-            Z1 = self.get_Z(m[1])
-            Y = self.get_Y(m[2])
-            tmp = np.dot(np.dot(Z0,Z1),Y)
-            tmp += np.dot(np.dot(Z0,Y),Z1)
-            tmp += np.dot(np.dot(Y,Z0),Z1)
-            FN += np.dot(X,tmp)
-        return FN,None
+                FN.add((p,q+1),np.dot(Fpq,Ym))
+                FN.add((p+1,q),np.dot(Fpq,Zm)) 
+                FN.add((p+2,q),np.dot(Fpq,Dm)) 
+        self.ordered_F[N] = FN
+        err = np.zeros((self.ns**2,)*2,dtype=complex)
+        for (p,q),Fpq in FN.orders.items():
+            err += self.delta**p * self.eps**q * Fpq
+        assert np.linalg.norm(err/self.delta**2-self.F[N])/np.linalg.norm(self.F[N])<1e-6
     def _permute(self,typs,lens,m):
         string = ''
         for typ,l in zip(typs,lens):
             string += ''.join([typ] * l)
         ls = set(itertools.permutations(string,len(string)))
-        _sum = np.zeros((self.sys_size,)*2,dtype=complex)
+        _sum = np.zeros((self.ns**2,)*2,dtype=complex)
         for p in ls:
-            pd = np.eye(self.sys_size)
+            pd = np.eye(self.ns**2)
             for typ,mi in zip(p,m):
                 pd = np.dot(pd,self.get_matrix(typ,mi))
             _sum += pd 
         return _sum
     def get_sum_permute(self,N,typ1,typs,lens):
         l = sum(lens)
-        FN = np.zeros((self.sys_size,)*2,dtype=complex)
+        FN = np.zeros((self.ns**2,)*2,dtype=complex)
         mrange = range(1,N-(l-1)+1)
         ct = 0
         for m in itertools.product(mrange,repeat=l):
@@ -362,156 +291,9 @@ class Kernels:
             ct += 1
             FN += np.dot(self.get_matrix(typ1,N-_sum),self._permute(typs,lens,m))
         return FN,ct
-    def get_O2x(self,q,N):
-        FN,ct = self.get_sum_product(N,q-1,'C','Y')
-        FN_,ct_ = self.get_sum_permute1(N,q,'X','D','Y')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['Z','Y'],[2,q-2+1])
-        FN += FN_
-        ct += ct_
-        return FN,ct
-    def get_O31(self,N):
-        FN,ct = self.get_sum_product(N,1,'C','Z')
-        FN_,ct_ = self.get_sum_product(N,3,'X','Z')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute1(N,2,'X','D','Z')
-        FN += FN_
-        ct += ct_
-        return FN,ct
-    def get_O32(self,N):
-        FN,ct = self.get_sum_permute1(N,2,'C','Z','Y')
-        FN_,ct_ = self.get_sum_permute1(N,4,'X','Y','Z')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[1,1,1])
-        FN += FN_
-        ct += ct_
-        return FN,ct
-    def get_O3x(self,q,N):
-        FN,ct = self.get_sum_permute1(N,q,'C','Z','Y')
-        FN_,ct_ = self.get_sum_permute(N,'X',['Z','Y'],[3,q-1])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[1,1,q-1])
-        FN += FN_
-        ct += ct_
-        return FN,ct
-    def get_O41(self,N):
-        FN,ct = self.get_sum_product(N,2,'C','Z')
-        FN_,ct_ = self.get_sum_product(N,4,'X','Z')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_product(N,1,'C','D')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_product(N,2,'X','D')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute1(N,3,'X','D','Z')
-        FN += FN_
-        ct += ct_
-        return FN,ct
-    def get_O42(self,N):
-        FN,ct = self.get_sum_permute1(N,3,'C','Y','Z')
-        FN_,ct_ = self.get_sum_permute1(N,5,'X','Y','Z')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute1(N,2,'C','D','Y')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute1(N,3,'X','Y','D')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[1,2,1])
-        FN += FN_
-        ct += ct_
-        return FN,ct
-    def get_O4x(self,q,N):
-        FN,ct = self.get_sum_permute(N,'C',['Y','Z'],[q-1,2])
-        FN_,ct_ = self.get_sum_permute(N,'X',['Y','Z'],[q-1,4])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute1(N,q,'C','D','Y')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['Y','D'],[q-1,2])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[1,2,q-1])
-        FN += FN_
-        ct += ct_
-        return FN,ct
-    def get_O51(self,N):
-        FN,ct = self.get_sum_product(N,3,'C','Z')
-        FN_,ct_ = self.get_sum_product(N,5,'X','Z')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute1(N,2,'C','D','Z')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute1(N,3,'X','Z','D')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute1(N,4,'X','D','Z')
-        FN += FN_
-        ct += ct_
-        return FN,ct
-    def get_O52(self,N):
-        FN,ct = self.get_sum_permute1(N,4,'C','Y','Z')
-        FN_,ct_ = self.get_sum_permute1(N,6,'X','Y','Z')
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'C',['D','Z','Y'],[1,1,1])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['Z','D','Y'],[3,1,1])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[2,1,1])
-        FN += FN_
-        ct += ct_
-        return FN,ct
-    def get_O5x(self,q,N):
-        FN,ct = self.get_sum_permute(N,'C',['Y','Z'],[q-1,3])
-        FN_,ct_ = self.get_sum_permute(N,'X',['Y','Z'],[q-1,5])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'C',['D','Z','Y'],[1,1,q-1])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['Z','D','Y'],[3,1,q-1])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[2,1,q-1])
-        FN += FN_
-        ct += ct_
-        return FN,ct
-    def get_O6x(self,q,N):
-        FN,ct = self.get_sum_permute(N,'C',['Y','Z'],[q-1,4])
-        FN_,ct_ = self.get_sum_permute(N,'C',['D','Z','Y'],[1,2,q-1])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'C',['D','Y'],[2,q-1])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['Y','Z'],[q-1,6])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['Z','D','Y'],[4,1,q-1])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['D','Z','Y'],[2,2,q-1])
-        FN += FN_
-        ct += ct_
-        FN_,ct_ = self.get_sum_permute(N,'X',['D','Y'],[3,q-1])
-        FN += FN_
-        ct += ct_
-        return FN,ct
-    def get_Opq(self,p,q,N):
+    def get_order(self,p,q,N):
         k,r = p//2, p%2
-        FN = np.zeros((self.sys_size,)*2,dtype=complex)
+        FN = np.zeros((self.ns**2,)*2,dtype=complex)
         ct = 0
         for i in range(k+1):
             nz = 2*(k-i) if r==0 else 2*(k-i)+1
@@ -524,117 +306,89 @@ class Kernels:
             FN += FNi
             ct += cti
         return FN,ct
-def count1(N,p):
-    if p==1:
-        return 3,None
-    err = 0
-    kmax = min(p+1,N+1-p)
-    ct = [0 for _ in range(kmax+1)]  
-    for k in range(kmax+1):
-        coeff = scipy.special.binom(p+1,k) 
-        for s in range(p-1,N-k+1):
-            ct[k] += scipy.special.binom(s-1,p-2)
-        err += coeff * ct[k]
-        ct_ = scipy.special.binom(N-k+1,p)
-        assert ct[k] <= ct_
-        assert ct_ <= ct[k] * (N-k)/(p-1)
-    return err,np.array(ct)
-def count2(N,p):
-    if p==1:
-        return 3,None
-    err = 0
-    kmax = min(p+1,N+1-p)
-    ct = [0 for _ in range(kmax+1)]  
-    for k in range(kmax+1):
-        coeff = scipy.special.binom(p+1,k) 
-        ct[k] = scipy.special.binom(N-k+1,p)
-        err += coeff * ct[k]
-    return err,np.array(ct)
-def count3(N,p):
-    return scipy.special.binom(N+1,p)*2**p
-    
-def approx(N,p):
-    return 2 * (2*np.e*(N+1)/p)**p
-          
+
+size = 2,3,2
+check_phys = False
+check_phys = True 
+if check_phys:
+    #ham = Hamiltonian(size=size)
+    ham = SpinBoson(size=size)
+    prop = Propagator(ham=ham)
+    rho = get_density_matrix(size[0])
+    Us = prop.get_Us(ham.U)
+    rho = np.dot(Us,rho.flatten())
+    check_property(rho.reshape(size[0],size[0]))
+    rho -= prop.delta * np.dot(-1j*ham.Ls,rho)
+    check_property(rho.reshape(size[0],size[0]))
+    #exit()
+
 check = True
 check = False
 if check:
     max_order = None 
-    Nmax = 10 
+    Nmax = 8 
 
-    kn = Kernels(sys_size=2,max_order=max_order,eps=0.13,delta=0.27)
+    #ham = Hamiltonian(size=size)
+    ham = SpinBoson(size=size)
+    kn = OrderedPropagatedError(ham=ham,eps=0.13,delta=.27)
     for N in range(Nmax+1):
         print('N=',N)
-        kn.get_next(order=True)
+        kn.propagate(N)
     for N in range(Nmax+1): 
         print('\nN=',N)
-        #for order in range(1,max_order+1):
         for (p,q),F1 in kn.ordered_F[N].orders.items():
-            #if p>6:
-            #    continue
-            #if p==5:
-            #    if q>2:
-            #        continue
             print('p,q=',p,q)
-            F2,ct2 = kn.get_order(p,q,N) 
-            #_,ct3 = count1(N,order)
+            F2,ct = kn.get_order(p,q,N) 
             if np.linalg.norm(F1)<1e-6:
                 assert np.linalg.norm(F2)<1e-6
             else:
                 assert np.linalg.norm(F1-F2)/np.linalg.norm(F1)<1e-6
-            #if ct3 is None:
-            #    continue
-            #if np.linalg.norm(ct2)<1e-6:
-            #    assert np.linalg.norm(ct3)<1e-6
-            #else:
-            #    assert np.linalg.norm(ct2-ct3)/np.linalg.norm(ct2)<1e-6
-            #err3 = count(N,order)
-            #err4 = approx(N,order)
-            #print('order=',order,err1,err2,err3,err4)
     exit()
 
 plot_XYZ = True
+plot_XYZ = False
 if plot_XYZ:
     Nmax = 100
     Ns = range(Nmax+1)
-    #typs = 'X','Y','Z'
-    typs = 'U',#'Y','Z'
-    max_order = None 
+    typs = 'X','Y','Z','K','C','D'
     runs = range(200)
     every = 1 
     data = np.zeros((len(runs),len(typs),Nmax+1))
     for run in runs:
         if run%every==0:
             print('run=',run)
-        kn = Kernels(sys_size=2,max_order=max_order,eps=0.13,delta=0.27)
+        #ham = Hamiltonian(size=size)
+        ham = SpinBoson(size=size)
+        kn = PropagatedError(ham=ham,eps=0.13,delta=0.27)
         for N in Ns:
-            kn.get_next(full=False)
+            kn.propagate(N)
         for ix,typ in enumerate(typs): 
             for N in Ns:
                 data[run,ix,N] = np.linalg.norm(kn.get_matrix(typ,N))
     data = np.quantile(data,(0.25,0.5,0.75),axis=0)
-    print(data.shape)
     for ix,typ in enumerate(typs):
         y = data[:,ix,:]
         fig,ax = plt.subplots(nrows=1,ncols=1)
         ax.plot(Ns,y[1],linestyle='-')
         ax.fill_between(Ns,y[0],y[2],alpha=0.2)
-        plt.subplots_adjust(left=0.1, bottom=0.15, right=0.99, top=0.95)
+        plt.subplots_adjust(left=0.15, bottom=0.15, right=0.99, top=0.95)
         ax.set_xlabel('N')
         ax.set_ylabel(typ+'norm')
+        if typ=='K':
+            ax.set_yscale('log')
         fig.savefig(typ+'.png')
-exit()
-    
-    
+    exit()
 
-plot_eps = True
-sys_size = 2 
+
 #plot_eps = False 
 if plot_eps:
-    fig,ax = plt.subplots(nrows=1,ncols=1)
+    Nmax = 50
+    Ns = range(Nmax+1)
     runs = range(20)
-    every = 20
-    for epsi,color in zip(eps,colors):
+    every = 1 
+    param = (0.0001,0.00001),
+    fig,ax = plt.subplots(nrows=1,ncols=1)
+    for (deli,epsi),color in zip(eps,colors):
         print('epsilon=',eps)
         ls = []
         for run in runs: 
